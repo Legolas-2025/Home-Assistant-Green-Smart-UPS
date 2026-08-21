@@ -1,0 +1,253 @@
+esphome:
+  name: hag-ups-monitor
+  friendly_name: HAG UPS Monitor
+  
+esp32:
+  board: esp32-h2-devkitm-1
+  variant: esp32h2
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+
+# Native Home Assistant API for instant push-based status delivery
+api:
+  encryption:
+    key: !secret hag_ups_monitor__encryption_key
+
+ota:
+  - platform: esphome
+
+network:
+  enable_ipv6: true
+
+# Thread configuration utilizing the SLZB-MR5U
+openthread:
+  device_type: MTD 
+  tlv: !secret my_thread_dataset 
+
+i2c:
+  sda: GPIO10
+  scl: GPIO11
+  scan: true
+
+# 1-Wire bus configuration for DS18B20 cells
+one_wire:
+  - platform: gpio
+    pin: GPIO5
+
+# Persistent globals to save timestamps safely (using escaped quotes for strings)
+globals:
+  - id: saved_outage_time
+    type: std::string
+    restore_value: yes
+    initial_value: "\"Never\""
+  - id: saved_restore_time
+    type: std::string
+    restore_value: yes
+    initial_value: "\"Never\""
+  - id: saved_low_bat_time
+    type: std::string
+    restore_value: yes
+    initial_value: "\"Never\""
+  - id: saved_reboot_time
+    type: std::string
+    restore_value: no
+    initial_value: "\"Starting up...\"" 
+  - id: saved_time_sync_status
+    type: std::string
+    restore_value: no
+    initial_value: "\"Pending...\""
+  - id: low_bat_logged
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+sensor:
+  - platform: max17043
+    address: 0x36
+    battery_level:
+      name: "UPS Battery Level"
+      id: ups_battery_level
+      icon: "mdi:battery"
+      on_value:
+        then:
+          - lambda: |-
+              // If mains power is OFF (binary sensor state is false) and battery <= 3%
+              if (!id(mains_power_status).state && x <= 3.0) {
+                if (!id(low_bat_logged) && id(current_time).now().is_valid()) {
+                  auto time_str = id(current_time).now().strftime("%Y-%m-%d %H:%M:%S");
+                  id(saved_low_bat_time) = time_str;
+                  id(last_low_bat_time).publish_state(time_str);
+                  ESP_LOGI("battery", "Critical 3% battery threshold reached during outage. Timestamp saved!");
+                  id(low_bat_logged) = true;
+                }
+              }
+    battery_voltage:
+      name: "UPS Battery Voltage"
+      id: ups_battery_voltage
+      icon: "mdi:battery-high"
+    update_interval: 30s
+
+  # --- Dual 18650 Temperature Monitoring ---
+  # Note: Once you boot the device, ESPHome logs will show the unique hex address 
+  # for each sensor. You can later replace "index: 0/1" with "address: 0x..." if needed. 
+  - platform: dallas_temp
+    index: 0
+    name: "UPS Battery Cell 1 Temperature"
+    id: ups_temp_cell_1
+    icon: "mdi:thermometer"
+    update_interval: 10s
+
+  - platform: dallas_temp
+    index: 1
+    name: "UPS Battery Cell 2 Temperature"
+    id: ups_temp_cell_2
+    icon: "mdi:thermometer"
+    update_interval: 10s
+
+  - platform: openthread_info
+    parent_last_rssi:
+      name: "UPS Thread Signal Strength"
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO4
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    name: "Mains Power Status"
+    id: mains_power_status
+    device_class: plug
+    icon: "mdi:power-plug"
+    filters:
+      - delayed_on: 100ms
+      - delayed_off: 100ms
+    on_press:
+      # Mains lost (Power Outage)
+      then:
+        - logger.log: "Power outage detected! Saving timestamp..."
+        - lambda: |-
+            if (id(current_time).now().is_valid()) {
+              auto time_str = id(current_time).now().strftime("%Y-%m-%d %H:%M:%S");
+              id(saved_outage_time) = time_str;
+              id(last_outage_time).publish_state(time_str);
+            } else {
+              id(saved_outage_time) = "Time Sync Pending";
+              id(last_outage_time).publish_state("Time Sync Pending");
+            }
+    on_release:
+      # Mains restored
+      then:
+        - logger.log: "Mains power restored! Saving timestamp & resetting low battery flag..."
+        - lambda: |-
+            auto time_str = id(current_time).now().strftime("%Y-%m-%d %H:%M:%S");
+            id(saved_restore_time) = time_str;
+            id(last_restore_time).publish_state(time_str);
+            id(low_bat_logged) = false; // Reset so next outage can log 3% again
+
+text_sensor:
+  # This platform requires ESPHome v2026.8.0 (if earlyer verison, comment it out):
+  - platform: openthread_info
+    role:
+      name: "Thread Device Role"
+    ip_address:
+      name: "Thread IP Address"
+    channel:
+      name: "Thread Channel"
+
+  # Time Sync Status Sensor
+  - platform: template
+    name: "Time Sync"
+    id: time_sync_status
+    icon: "mdi:clock-check-outline"
+    lambda: |-
+      return id(saved_time_sync_status);
+
+  # NVS-backed Event Timestamps pulling from globals
+  - platform: template
+    name: "Last Power Outage Time"
+    id: last_outage_time
+    icon: "mdi:clock-alert"
+    lambda: |-
+      return id(saved_outage_time);
+
+  - platform: template
+    name: "Last Mains Restore Time"
+    id: last_restore_time
+    icon: "mdi:clock-check"
+    lambda: |-
+      return id(saved_restore_time);
+
+  - platform: template
+    name: "Last Low Battery 3% Time"
+    id: last_low_bat_time
+    icon: "mdi:clock-remove"
+    lambda: |-
+      return id(saved_low_bat_time);
+
+  - platform: template
+    name: "Last Reboot Time"
+    id: last_reboot_time
+    icon: "mdi:restart"
+    lambda: |-
+      return id(saved_reboot_time);
+
+number:
+  - platform: template
+    name: "Sensor Update Interval"
+    id: update_interval_slider
+    icon: "mdi:timer-cog"
+    min_value: 10
+    max_value: 120
+    step: 5
+    unit_of_measurement: "s"
+    restore_value: true
+    initial_value: 30
+    optimistic: true
+
+button:
+  - platform: restart
+    name: "Restart UPS Monitor"
+    id: restart_button
+    icon: "mdi:restart"
+
+# Time sync retry logic: checks every 30s, up to 9 times (~4.5 minutes)
+interval:
+  - interval: 30s
+    then:
+      - lambda: |-
+          static int retry_count = 0;
+          static bool time_synced = false;
+
+          if (!time_synced) {
+            if (id(current_time).now().is_valid()) {
+              auto time_str = id(current_time).now().strftime("%Y-%m-%d %H:%M:%S");
+              id(saved_reboot_time) = time_str;
+              id(last_reboot_time).publish_state(time_str);
+              
+              // Update status global and push state
+              id(saved_time_sync_status) = "Success";
+              id(time_sync_status).publish_state("Success");
+              
+              ESP_LOGI("time_sync", "Time successfully synchronized: %s", time_str.c_str());
+              time_synced = true;
+            } else {
+              retry_count++;
+              ESP_LOGW("time_sync", "Time sync pending... attempt %d of 9", retry_count);
+              
+              if (retry_count >= 9) {
+                id(saved_time_sync_status) = "Failed - try to restart";
+                id(time_sync_status).publish_state("Failed - try to restart");
+                ESP_LOGE("time_sync", "Time sync failed after 9 attempts. Stopping retries.");
+                time_synced = true; // Stops further attempts
+              }
+            }
+          }
+
+time:
+  - platform: homeassistant
+    id: current_time
