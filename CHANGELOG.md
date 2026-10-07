@@ -1,9 +1,37 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file.
+This project now adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [v1.2.0-alpha] - 2026-10-07
+
+### Fixed
+- **Critical**: Inverted `on_press` / `on_release` on the mains-power binary
+  sensor. Outage timestamps were being recorded on power *restore* and vice
+  versa. Logic is now correct.
+- `openthread.dataset` replaced with the correct `dataset:` key (was `tlv:`
+  in earlier drafts).
+- Time-sync status and reboot timestamp now use `restore_value: no` so they
+  correctly reset to "Pending…" / "Starting up…" on every boot instead of
+  persisting stale values.
+- README filename reference corrected to `hag_smart_ups.yaml`.
+- Removed corrupted trailing fragment from the README.
+- Corrected "earlyer verison" → "earlier version" typo.
+- Runtime figure aligned to the documented 5.5 h calculation (was 6 h in the
+  title).
+- License language aligned to the MIT LICENSE file (removed the contradictory
+  "educational and personal use" wording).
+- Copyright line in CHANGELOG aligned to the LICENSE holder.
+
+### Removed
+- **Sensor Update Interval** number slider. The slider was decorative: the
+  MAX17043 and DS18B20 update intervals are compile-time constants and the
+  slider never wired to them. Removing it eliminates a misleading UI element.
+
+### Added
+- README now includes a `.gitignore` reminder for `secrets.yaml`.
+- README now notes that the ESP32-H2 has no WiFi and all traffic uses Thread.
+- SemVer claim softened to "loosely follows" to match actual practice.
 
 ---
 
