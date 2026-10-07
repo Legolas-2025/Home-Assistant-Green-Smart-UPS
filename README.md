@@ -1,6 +1,6 @@
 ![HAG Smart UPS](docs/imgs/HAG-Smart-UPS_Header-Image.jpg)
 
-# Home Assistant Green Smart UPS - *Up To 6 Hours Runtime*
+# Home Assistant Green Smart UPS - *Up To 5.5 Hours Runtime*
 
 > A DIY Uninterruptible Power Supply with smart monitoring capabilities for the Home Assistant Green hub, featuring ESP32-H2 microcontroller and Thread wireless protocol.
 
@@ -44,7 +44,7 @@ The "Hardware Cutoff" configuration ensures the Home Assistant Green automatical
 | **Thread Protocol** | Wireless communication via OpenThread Border Router |
 | **Persistent Logging** | NVS-backed timestamps that survive power loss |
 | **Smart Time Sync** | Auto-retry mechanism (up to 4.5 minutes) |
-| **Remote Management** | Restart button and adjustable polling interval |
+| **Remote Management** | Restart button for remote soft-reset |
 | **Hardware Protection** | Automatic battery cutoff to prevent deep discharge |
 | **Protected Power Path** | DD4012SA provides built-in OVP/OCP/SCP/OTP for the ESP32 rail |
 
@@ -94,12 +94,6 @@ Once flashed and connected to your Thread network, the HAG Smart UPS automatical
 |-------------|--------|
 | **Restart UPS Monitor** | Triggers a soft restart of the ESP32-H2 firmware |
 
-### Exposed Controls
-
-| Entity Name | Range | Default | Description |
-|-------------|-------|---------|-------------|
-| **Sensor Update Interval** | 10s - 120s (5s steps) | 30s | Adjustable polling interval for fuel gauge updates |
-
 ---
 
 ## What You Get
@@ -110,12 +104,11 @@ Building this project gives you a complete, self-contained UPS monitoring soluti
 - **Intelligent Battery Management**: The MAX17043 fuel gauge provides accurate state-of-charge readings, while the dual DS18B20 sensors monitor cell temperatures to prevent thermal runaway
 - **Power Outage Detection**: Instant notification when mains power is lost, with automatic timestamp logging of outage start, end, and critical events
 - **Automatic Recovery**: The "Hardware Cutoff" design ensures your Home Assistant Green reboots automatically when power is restored—no software intervention needed
-- **Extended Runtime**: Up to 6 hours of backup power with dual 18650 cells in 1S2P configuration
+- **Extended Runtime**: Up to 5.5 hours of backup power with dual 18650 cells in 1S2P configuration
 
 **Smart Monitoring Features:**
 - Persistent event logging that survives power cycles and reboots
 - Smart time synchronization with automatic retry logic
-- Configurable update intervals for battery polling
 - Thread network diagnostics (signal strength, device role, IP address)
 
 **Integration Benefits:**
@@ -972,7 +965,7 @@ Legend:
 ## Software Configuration
 
 ### ESPHome YAML Configuration
-The complete ESPHome configuration is available in `hag_smart_ups_for_esphome.yaml`.
+The complete ESPHome configuration is available in `hag_smart_ups.yaml`.
 
 ### Key Configuration Sections
 ```yaml
@@ -1007,7 +1000,6 @@ binary_sensor:
 | Battery Voltage (MAX17043) | 30s | Fixed |
 | Temperature (DS18B20) | 10s | Fixed |
 | Thread Signal | 60s | Fixed |
-| Polling Interval | 30s | 10s - 120s |
 
 ### Time Synchronization
 The system includes a smart time sync mechanism:
@@ -1019,6 +1011,8 @@ The system includes a smart time sync mechanism:
 ---
 
 ## Thread Network Setup
+
+> **Note**: The ESP32-H2 has **no WiFi radio**. All ESPHome API, OTA, and time-sync traffic is routed over the Thread network using IPv6.
 
 ### Prerequisites
 1. **OpenThread Border Router** (OTBR) must be operational
@@ -1041,6 +1035,12 @@ my_thread_dataset: |
 # ESPHome API encryption key
 hag_ups_monitor__encryption_key: "your_encryption_key_here"
 ```
+
+> 🔒 **Security**: Add `secrets.yaml` to your `.gitignore` to prevent accidentally committing credentials:
+>
+> ```gitignore
+> secrets.yaml
+> ```
 
 ### Thread Device Role
 The ESP32-H2 is configured as an **MTD (Minimal Thread Device)**:
@@ -1254,13 +1254,20 @@ For advanced Thread network configurations:
 
 ## License
 
-This project is provided as-is for educational and personal use.
+This project is released under the **MIT License**. See the [LICENSE](LICENSE) file for full details.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please submit issues and pull requests through GitHub.
+Contributions and testing feedback are welcome.
+
+1. Fork the repository.
+2. Create a feature branch (`git checkout -b feature/your-feature`).
+3. Make your changes and commit.
+4. Submit a pull request.
+
+Please open an **issue** before starting large changes so we can discuss scope and direction.
 
 ---
 
@@ -1272,8 +1279,7 @@ Contributions are welcome! Please submit issues and pull requests through GitHub
 
 ---
 
-**Version**: 1.1a (Pre-Release Alpha) — *DD4012SA migration*
-**Last Updated**: September 2026
+**Version**: v1.2.0-alpha
+**Last Updated**: October 2026
 
 > **Note**: This is an alpha release. While functional, it has not been extensively tested in all scenarios. Use in production systems at your own risk. Contributions and testing feedback are welcome.
-stems at your own risk. Contributions and testing feedback are welcome.
