@@ -4,6 +4,30 @@
 
 > A DIY Uninterruptible Power Supply with smart monitoring capabilities for the Home Assistant Green hub, featuring ESP32-H2 microcontroller and Thread wireless protocol.
 
+## What's New in v1.2.1-alpha
+
+**Changed — polling behaviour**
+- **The Thread diagnostics were polling far faster than documented.** `openthread_info` defaults are aggressive:
+  `parent_last_rssi` polls every **5 s**, and `role` / `ip_address` / `channel` every **1 s**. Those four
+  entities alone accounted for roughly **11,500 messages per hour** over the Thread link — by a wide margin
+  the largest source of traffic on this device, and far bigger than the sensor polling discussed below. They are
+  now set to **900 s**.
+- **The timestamp and status text sensors no longer self-poll.** They previously re-sent identical strings every
+  60 s on top of being published explicitly by the mains-detection handlers. They now use
+  `update_interval: never`, with the restored NVS values published once at boot.
+
+**Added**
+- **Delta filters on the battery and temperature sensors.** Readings are still taken on every poll but are only
+  *transmitted* when they actually change — see [Sensor Update Intervals](#sensor-update-intervals).
+- **`update_interval` now also governs both DS18B20 cell sensors**, so lowering the slider speeds up
+  thermal-fault detection as well. Range widened from 10–120 s to **10–300 s**.
+
+> Note when editing the YAML: `update_interval` must be placed **inside** each `openthread_info` entity key
+> (`parent_last_rssi: { name: ..., update_interval: ... }`). At platform level it fails validation with
+> `[update_interval] is an invalid option for [sensor.openthread_info]`.
+
+---
+
 ## What's New in v1.2.0-alpha
 
 > ⚠️ **Read this before upgrading from v1.1a** — your event timestamps were being recorded against the
@@ -36,6 +60,7 @@ valid hex; OVP removed from the DD4012SA protection list; "survives reboot" clai
 ---
 
 ## Table of Contents
+- [What's New in v1.2.1-alpha](#whats-new-in-v121-alpha)
 - [What's New in v1.2.0-alpha](#whats-new-in-v120-alpha)
 1. [Overview](#overview)
 2. [Features](#features)
@@ -86,13 +111,13 @@ Once flashed and connected to your Thread network, the HAG Smart UPS automatical
 
 ### Exposed Sensors
 
-| Entity Name | Type | Description | Update Interval |
-|-------------|------|-------------|-----------------|
-| **UPS Battery Level** | Percentage | Real-time state of charge from MAX17043 fuel gauge | 30 seconds |
-| **UPS Battery Voltage** | Voltage (V) | Current battery voltage (3.0V - 4.2V range) | 30 seconds |
-| **UPS Battery Cell 1 Temperature** | Temperature (°C) | DS18B20 temperature reading on cell 1 | 10 seconds |
-| **UPS Battery Cell 2 Temperature** | Temperature (°C) | DS18B20 temperature reading on cell 2 | 10 seconds |
-| **UPS Thread Signal Strength** | RSSI (dBm) | Thread network signal strength to OTBR | 60 seconds |
+| Entity Name | Type | Description | Polled Every | Sent To HA When |
+|-------------|------|-------------|--------------|-----------------|
+| **UPS Battery Level** | Percentage | Real-time state of charge from MAX17043 fuel gauge | 30s (slider 10-300s) | level moves ≥ 1 % |
+| **UPS Battery Voltage** | Voltage (V) | Current battery voltage (3.0V - 4.2V range) | 30s (slider 10-300s) | moves ≥ 0.05 V |
+| **UPS Battery Cell 1 Temperature** | Temperature (°C) | DS18B20 temperature reading on cell 1 | 30s (slider 10-300s) | moves ≥ 0.5 °C |
+| **UPS Battery Cell 2 Temperature** | Temperature (°C) | DS18B20 temperature reading on cell 2 | 30s (slider 10-300s) | moves ≥ 0.5 °C |
+| **UPS Thread Signal Strength** | RSSI (dBm) | Thread network signal strength to OTBR | 900s | every poll |
 
 ### Exposed Binary Sensors
 
@@ -128,7 +153,7 @@ Once flashed and connected to your Thread network, the HAG Smart UPS automatical
 
 | Entity Name | Range | Default | Description |
 |-------------|-------|---------|-------------|
-| **Sensor Update Interval** | 10s - 120s (5s steps) | 30s | Adjustable polling interval for fuel gauge updates (live as of v1.2.0-alpha) |
+| **Sensor Update Interval** | 10s - 300s (10s steps) | 30s | Polling interval for the fuel gauge **and both cell temperature sensors** (live as of v1.2.0-alpha, extended in v1.2.1-alpha) |
 
 ---
 
@@ -1003,7 +1028,7 @@ Legend:
 ## Software Configuration
 
 ### ESPHome YAML Configuration
-The complete ESPHome configuration is available in [`hag_smart_ups.yaml`](hag_smart_ups.yaml) (shipped with this release, **v1.2.0-alpha**).
+The complete ESPHome configuration is available in [`hag_smart_ups.yaml`](hag_smart_ups.yaml) (shipped with this release, **v1.2.1-alpha**).
 
 #### Requirements
 
@@ -1064,17 +1089,48 @@ binary_sensor:
 
 ### Sensor Update Intervals
 
-| Sensor | Default Interval | Configurable Range |
-|--------|------------------|-------------------|
-| Battery Level (MAX17043) | 30s | 10s - 120s (via the *Sensor Update Interval* number) |
-| Battery Voltage (MAX17043) | 30s | 10s - 120s (shares the fuel-gauge interval) |
-| Temperature (DS18B20) | 10s | Fixed |
-| Thread Signal | 60s | Fixed |
-| **Fuel-gauge polling** | **30s** | **10s - 120s** |
+| Sensor | Interval | Configurable Range | Transmits On |
+|--------|----------|-------------------|---------------|
+| Battery Level (MAX17043) | 30s | 10s - 300s (via the *Sensor Update Interval* number) | ≥ 1 % change |
+| Battery Voltage (MAX17043) | 30s | shared — same slider | ≥ 0.05 V change |
+| Temperature (DS18B20) ×2 | 30s | shared — same slider | ≥ 0.5 °C change |
+| Thread Signal (RSSI) | 900s | Fixed | every poll |
+| Thread role / IP / channel | 900s | Fixed | every poll |
+| Timestamp + status text sensors | never | n/a | on event, plus once at boot |
 
 > The *Sensor Update Interval* number entity was inert in v1.1a — it was declared but never read by any
 > component. As of **v1.2.0-alpha** it drives `set_update_interval()` on the MAX17043 polling loop, and the
-> stored value is re-applied on boot.
+> stored value is re-applied on boot. As of **v1.2.1-alpha** it also governs **both DS18B20 cell sensors**,
+> so lowering it speeds up thermal-fault detection too. Range widened to 10s - 300s.
+
+#### Why the cell temperatures are polled fast
+
+The DS18B20 cadence is tied to the slider rather than slowed, deliberately. An 18650 has roughly 40 J/K of
+thermal capacity, so a developing internal fault raises its temperature quickly — about **15 °C/min at 10 W**,
+or **30 °C/min at 20 W**. A 300 s sampling interval would therefore miss most of the event: at 10 W the cell
+gains ~75 °C between two samples, i.e. from a 25 °C starting point it would be at 100 °C before it was even
+reported.
+
+The cost of that fast cadence is kept near zero by the delta filters rather than by slowing the reads. The
+sensor is still **read** on every poll (a local 1-Wire transaction — cheap), but the value is only sent when
+it has actually moved, so normal thermal drift produces almost no network traffic while a genuine event still
+surfaces within one poll of onset.
+
+#### Delta filters: reading fast, transmitting rarely
+
+ESPHome publishes a sensor's state on **every** poll, even when the value is byte-for-byte identical to the
+last one — `force_update` only affects whether Home Assistant records the value in its database, not whether
+the message crosses the network. This release adds `filters:` thresholds so unchanged readings are dropped
+before transmission:
+
+| Entity | Filter |
+|--------|--------|
+| Cell temperature ×2 | `delta: 0.5` (°C) |
+| Battery level | `delta: 1` (%) |
+| Battery voltage | `delta: 0.05` (V) |
+
+The 3 % critical-battery check deliberately uses `on_raw_value` rather than `on_value`, so it is evaluated on
+**every** reading even when the filter suppresses the network send.
 
 ### DS18B20 Addressing
 
@@ -1355,7 +1411,7 @@ Contributions are welcome! Please submit issues and pull requests through GitHub
 
 ---
 
-**Version**: 1.2.0-alpha (Pre-Release Alpha) — *Firmware correctness & documentation release*
+**Version**: 1.2.1-alpha (Pre-Release Alpha) — *Polling and network-traffic correction*
 **Last Updated**: October 2026
 
 > **Note**: This is a pre-release alpha. While validated, it has not been extensively tested in all scenarios. Use in production systems at your own risk. Contributions and testing feedback are welcome.
