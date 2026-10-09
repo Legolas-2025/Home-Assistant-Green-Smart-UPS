@@ -1,12 +1,42 @@
 ![HAG Smart UPS](docs/imgs/HAG-Smart-UPS_Header-Image.jpg)
 
-# Home Assistant Green Smart UPS - *Up To 6 Hours Runtime*
+# Home Assistant Green Smart UPS - *Up To 5.5 Hours Runtime*
 
 > A DIY Uninterruptible Power Supply with smart monitoring capabilities for the Home Assistant Green hub, featuring ESP32-H2 microcontroller and Thread wireless protocol.
+
+## What's New in v1.2.0-alpha
+
+> ⚠️ **Read this before upgrading from v1.1a** — your event timestamps were being recorded against the
+> **wrong edge** of the mains-detection signal.
+
+**Fixed**
+- **Mains detection triggers were inverted.** The outage timestamp was written when power *arrived* and the
+  restore timestamp when power *left*. Because the PC817 pulls GPIO4 LOW while mains is present and
+  `inverted: true` maps LOW → ON, `on_press` is **mains restored** and `on_release` is **mains lost**.
+  Both handlers are now swapped. This also resets the `low_bat_logged` flag at the correct moment, so the
+  3 % critical event logs reliably on each subsequent outage.
+- **Restore timestamps could be written as `1970-01-01`.** The mains-restored handler formatted the clock
+  without checking `is_valid()`, so an unsynced clock produced a bogus epoch timestamp. It now reports
+  `Time Sync Pending`, matching the outage handler.
+
+**Added**
+- **The *Sensor Update Interval* control now works.** It was declared but never read by any component — a
+  dead entity advertised in the README. It now drives the MAX17043 polling loop at runtime and re-applies
+  the stored value after a reboot.
+- **`safe_mode` boot-loop guard**, tuned against the documented "Boot Loop on Power Restore" issue.
+- Documented minimum ESPHome versions and the reason each one matters.
+
+**Corrected in documentation** — runtime title now matches the 5–5.5 h calculation; the `tlv:` key is
+documented as correct (see below); power pins are all on the top-right; the sample Thread dataset is now
+valid hex; OVP removed from the DD4012SA protection list; "survives reboot" claims corrected.
+
+> 🔒 **Do not "fix" `openthread: tlv:` into `network_dataset:`.** There is no such option — ESPHome fails
+> to compile with `[network_dataset] is an invalid option for [openthread]`.
 
 ---
 
 ## Table of Contents
+- [What's New in v1.2.0-alpha](#whats-new-in-v120-alpha)
 1. [Overview](#overview)
 2. [Features](#features)
 3. [Bill of Materials](#bill-of-materials)
@@ -46,7 +76,7 @@ The "Hardware Cutoff" configuration ensures the Home Assistant Green automatical
 | **Smart Time Sync** | Auto-retry mechanism (up to 4.5 minutes) |
 | **Remote Management** | Restart button and adjustable polling interval |
 | **Hardware Protection** | Automatic battery cutoff to prevent deep discharge |
-| **Protected Power Path** | DD4012SA provides built-in OVP/OCP/SCP/OTP for the ESP32 rail |
+| **Protected Power Path** | DD4012SA provides built-in UVLO/OCP/SCP/OTP for the ESP32 rail |
 
 ---
 
@@ -74,7 +104,7 @@ Once flashed and connected to your Thread network, the HAG Smart UPS automatical
 
 | Entity Name | Description | Persistence |
 |-------------|-------------|-------------|
-| **Time Sync** | Current time synchronization status (Pending/Success/Failed) | Survives reboot |
+| **Time Sync** | Current time synchronization status (Pending/Success/Failed) | Resets on reboot |
 | **Last Power Outage Time** | Timestamp when last mains failure was detected | Survives reboot |
 | **Last Mains Restore Time** | Timestamp when mains power was restored | Survives reboot |
 | **Last Low Battery 3% Time** | Timestamp when critical 3% battery threshold was reached during outage | Survives reboot |
@@ -98,7 +128,7 @@ Once flashed and connected to your Thread network, the HAG Smart UPS automatical
 
 | Entity Name | Range | Default | Description |
 |-------------|-------|---------|-------------|
-| **Sensor Update Interval** | 10s - 120s (5s steps) | 30s | Adjustable polling interval for fuel gauge updates |
+| **Sensor Update Interval** | 10s - 120s (5s steps) | 30s | Adjustable polling interval for fuel gauge updates (live as of v1.2.0-alpha) |
 
 ---
 
@@ -110,7 +140,7 @@ Building this project gives you a complete, self-contained UPS monitoring soluti
 - **Intelligent Battery Management**: The MAX17043 fuel gauge provides accurate state-of-charge readings, while the dual DS18B20 sensors monitor cell temperatures to prevent thermal runaway
 - **Power Outage Detection**: Instant notification when mains power is lost, with automatic timestamp logging of outage start, end, and critical events
 - **Automatic Recovery**: The "Hardware Cutoff" design ensures your Home Assistant Green reboots automatically when power is restored—no software intervention needed
-- **Extended Runtime**: Up to 6 hours of backup power with dual 18650 cells in 1S2P configuration
+- **Extended Runtime**: Up to 5.5 hours of backup power with dual 18650 cells in 1S2P configuration
 
 **Smart Monitoring Features:**
 - Persistent event logging that survives power cycles and reboots
@@ -138,7 +168,7 @@ Building this project gives you a complete, self-contained UPS monitoring soluti
 | HW-465C UPS Module | 1 | 12V boost + charger |
 | 18650 Battery Cells | 2 | 3000mAh+ capacity, 1S2P configuration |
 | MAX17043 I2C Fuel Gauge Module | 1 | Battery SoC monitoring |
-| PC817 or EL817 Optocoupler | 1 | Mains detection (100% interchangeable) |
+| PC817 or EL817 Optocoupler | 1 | Mains detection (drop-in replacement — verify CTR if detection is unreliable) |
 | DS18B20 Temperature Sensors | 2 | One per battery cell |
 | DD4012SA Buck Converter (5V variant) | 1 | 12V to 5V conversion with built-in protections |
 
@@ -235,8 +265,8 @@ The DD4012SA is a compact, industrial-grade 5W DC-DC step-down buck converter. T
 
 - DD4012SA **IN+** (Pin 1) → HW-465C **OUT+** (12V)
 - DD4012SA **GND** (Pin 2) → HW-465C **OUT-**
-- DD4012SA **OUT+** (Pin 3, 5V) → ESP32-H2 **5V** pin (TOP LEFT)
-- ESP32-H2 **GND** pin (TOP LEFT) → Common GND bus (DD4012SA GND, HW-465C OUT-)
+- DD4012SA **OUT+** (Pin 3, 5V) → ESP32-H2 **5V** pin (TOP RIGHT)
+- ESP32-H2 **GND** pin (TOP RIGHT) → Common GND bus (DD4012SA GND, HW-465C OUT-)
 
 > ⚠️ **NOTE**: The ESP32-H2 will be powered through the DD4012SA. When the HW-465C cuts off battery power, the ESP32 will also lose power, preventing deep discharge.
 
@@ -402,9 +432,9 @@ If the ESP32-H2 experiences boot loops when power is restored from a fully drain
                             │    │    │
                            12V  GND  5V
                             │    │    │
-                            │    │    └──────► ESP32-H2 5V  (TOP LEFT)
+                            │    │    └──────► ESP32-H2 5V  (TOP RIGHT)
                             │    │
-                            │    └───────────► ESP32-H2 GND (TOP LEFT, common GND bus)
+                            │    └───────────► ESP32-H2 GND (TOP RIGHT, common GND bus)
                             │
                             └───── (from HW-465C OUT+)
 
@@ -661,8 +691,8 @@ Output: 3.7V nominal, ~6000mAh total capacity
 3. **Verify** polarity before applying power
 
 #### Step 4.4: Connect DD4012SA to ESP32-H2
-1. **Connect** DD4012SA **OUT+** (Pin 3, 5V) to ESP32-H2 **5V** pin (TOP LEFT)
-2. **Connect** ESP32-H2 **GND** pin (TOP LEFT) to the common GND bus (DD4012SA Pin 2)
+1. **Connect** DD4012SA **OUT+** (Pin 3, 5V) to ESP32-H2 **5V** pin (TOP RIGHT)
+2. **Connect** ESP32-H2 **GND** pin (TOP RIGHT) to the common GND bus (DD4012SA Pin 2)
 
 > ⚠️ **NOTE**: The ESP32-H2 will be powered through the DD4012SA. When the HW-465C cuts off battery power, the ESP32 will also lose power, preventing deep discharge.
 
@@ -829,8 +859,8 @@ If the ESP32-H2 experiences boot loops when power is restored from a fully drain
 
 | Pin Label | GPIO | Alternate Functions | Connected To | Notes |
 |-----------|------|-------------------|--------------|-------|
-| 5V | — | Power Input | DD4012SA OUT+ (5V) | Main power input (TOP LEFT) |
-| GND | — | Ground | DD4012SA GND, PC817 Pin 3 | Common ground (TOP LEFT) |
+| 5V | — | Power Input | DD4012SA OUT+ (5V) | Main power input (TOP RIGHT) |
+| GND | — | Ground | DD4012SA GND, PC817 Pin 3 | Common ground (TOP RIGHT) |
 | 3V3 | — | 3.3V Output | MAX17043 VCC, DS18B20 VCC | Sensor power rail (TOP RIGHT) |
 | GPIO 4 | 4 | JTAG(MTCK), ADC_CH3 | PC817 Pin 4 | Mains Detection (LEFT SIDE) |
 | GPIO 5 | 5 | JTAG(MTDI), ADC_CH4 | DS18B20 Data | 1-Wire bus, needs 4.7kΩ pull-up (LEFT SIDE) |
@@ -845,14 +875,8 @@ If the ESP32-H2 experiences boot loops when power is restored from a fully drain
 │  (Vertical)                     │
 └─────────────────────────────────┘
 ═══════════════════════════════════════════════════════════════════
-TOP PINS (Power)              TOP PINS (Power)
-┌─────────┬─────────┐         ┌─────────┬─────────┐
-│   5V    │   GND   │         │    —    │    —    │
-│  PWR IN │    —    │         │    —    │    —    │
-└─────────┴─────────┘         └─────────┴─────────┘
-═══════════════════════════════════════════════════════════════════
 │
-LEFT SIDE ◄── ────► RIGHT SIDE
+LEFT SIDE ◄── ────► RIGHT SIDE   (5V / GND / 3V3 header sits at TOP RIGHT)
 ┌──────┐
 │  TX  │ ◄── GPIO24 (NC)
 ├──────┤
@@ -878,6 +902,12 @@ LEFT SIDE ◄── ────► RIGHT SIDE
 └──────┘
 RIGHT SIDE
 ┌──────┐
+│  5V  │ ◄── Power Input (5V in, TOP RIGHT)
+├──────┤
+│ GND  │ ◄── Ground
+├──────┤
+│  3V3 │ ◄── 3.3V output (sensor rail)
+├──────┤
 │  14  │ ◄── GPIO14 32K (NC)
 ├──────┤
 │  13  │ ◄── GPIO13 32K (NC)
@@ -907,8 +937,8 @@ RIGHT SIDE
 ║                                                                      ║
 ║  POWER CONNECTIONS:                                                  ║
 ║  ┌─────────────────────────────────────────────────────────────┐     ║
-║  │ DD4012SA OUT+ (5V) ──────────────► 5V pin (TOP LEFT)        │     ║
-║  │ DD4012SA GND  ──────────────► GND pin (TOP LEFT)            │     ║
+║  │ DD4012SA OUT+ (5V) ──────────────► 5V pin (TOP RIGHT)        │     ║
+║  │ DD4012SA GND  ──────────────► GND pin (TOP RIGHT)            │     ║
 ║  │ MAX17043 VCC ──────────────► 3V3 pin (TOP RIGHT)            │     ║
 ║  └─────────────────────────────────────────────────────────────┘     ║
 ║                                                                      ║
@@ -963,24 +993,53 @@ Legend:
    - Pulled low by the BOOT button during reset
    - Avoid using for critical inputs
 5. **Power Pin Locations**
-   - 5V, GND are on the **TOP LEFT**
-   - 3V3 is on the **TOP RIGHT**
+   - **5V, GND and 3V3 are all on the TOP RIGHT**, stacked contiguously as a single 3-pin header
+   - There is **no power pin on the left side** — the left column starts at `TX` (GPIO24)
    - The board has a **vertical orientation**
+   - A `BAT` pad is present next to the 5V pin (battery input); it is unused in this build
 
 ---
 
 ## Software Configuration
 
 ### ESPHome YAML Configuration
-The complete ESPHome configuration is available in `hag_smart_ups_for_esphome.yaml`.
+The complete ESPHome configuration is available in [`hag_smart_ups.yaml`](hag_smart_ups.yaml) (shipped with this release, **v1.2.0-alpha**).
+
+#### Requirements
+
+| Component | Minimum Version | Why |
+|-----------|-----------------|-----|
+| ESPHome | **2026.9.1** (validated against) | Uses `openthread_info` sensor/text_sensor platforms and `number` template `set_action` |
+| ESPHome | 2025.11.0 | `dallas_temp` gained the `index:` option (removed in 2024.6, restored in 2025.11) |
+| ESPHome | 2025.6.0 | `openthread` component introduced |
+| Thread border router | OTBR (e.g. SLZB-MR5U) | No Wi-Fi on the ESP32-H2 |
+
+> ⚠️ **Do not change `tlv:` to `network_dataset:`.** The `openthread` component's dataset key is `tlv`
+> (`CONF_TLV` in `esphome/components/openthread/const.py`). `network_dataset` is **not a valid option** and
+> ESPHome will refuse to compile with
+> `[network_dataset] is an invalid option for [openthread]`. The value is a **hex-encoded operational
+> dataset TLV**, not a file path.
 
 ### Key Configuration Sections
 ```yaml
 # Thread Protocol Configuration
 openthread:
   device_type: MTD  # Minimal Thread Device (battery optimized)
+  tlv: !secret my_thread_dataset   # hex TLV - NOT a filename
+
+# Thread is IPv6-only; enable_ipv6 is NOT set automatically
+network:
+  enable_ipv6: true
+
+# Boot-loop guard (top-level component, not an ota: platform)
+safe_mode:
+  boot_is_good_after: 2min
+  num_attempts: 10
+  reboot_timeout: 5min
 
 # MAX17043 I2C Configuration
+# Pins must be explicit: ESPHome's built-in SDA/SCL aliases resolve to
+# GPIO21/GPIO22 on every ESP32 variant, and GPIO21 is a SPI-flash pin on H2.
 i2c:
   sda: GPIO10
   scl: GPIO11
@@ -992,6 +1051,10 @@ one_wire:
     pin: GPIO5
 
 # Mains Detection (GPIO4, inverted)
+# The PC817 collector pulls GPIO4 LOW while mains is present, so
+# inverted:true makes LOW -> state true. Therefore:
+#   on_press   (state -> true)  = mains RESTORED
+#   on_release (state -> false) = mains LOST
 binary_sensor:
   - platform: gpio
     pin:
@@ -1003,11 +1066,26 @@ binary_sensor:
 
 | Sensor | Default Interval | Configurable Range |
 |--------|------------------|-------------------|
-| Battery Level (MAX17043) | 30s | Fixed |
-| Battery Voltage (MAX17043) | 30s | Fixed |
+| Battery Level (MAX17043) | 30s | 10s - 120s (via the *Sensor Update Interval* number) |
+| Battery Voltage (MAX17043) | 30s | 10s - 120s (shares the fuel-gauge interval) |
 | Temperature (DS18B20) | 10s | Fixed |
 | Thread Signal | 60s | Fixed |
-| Polling Interval | 30s | 10s - 120s |
+| **Fuel-gauge polling** | **30s** | **10s - 120s** |
+
+> The *Sensor Update Interval* number entity was inert in v1.1a — it was declared but never read by any
+> component. As of **v1.2.0-alpha** it drives `set_update_interval()` on the MAX17043 polling loop, and the
+> stored value is re-applied on boot.
+
+### DS18B20 Addressing
+
+`index:` is **0-based** and follows the sensors' ROM-code probe order, so cell 1 / cell 2 can swap if you
+re-pick or re-order the sensors. ESPHome prints each sensor's unique hex address on first boot; switch both
+entries to `address:` once you have recorded them:
+
+```yaml
+- platform: dallas_temp
+  address: 0x1234567890ABCD01   # mutually exclusive with index:
+```
 
 ### Time Synchronization
 The system includes a smart time sync mechanism:
@@ -1031,16 +1109,21 @@ The system includes a smart time sync mechanism:
 
 ### Configuration
 Add the following to your `secrets.yaml`:
-```yaml
-# Your Thread network dataset (from OTBR)
-my_thread_dataset: |
-  0E080000000000010000000300001B38060000000000020000518F6B42C7F63A1BB6E93F0308404E2A
-  605C05020C0410861A666569C04E12151F1B3056F0812636F6E2E33353634303033372E6875333236
-  5F8755455354000410332A2E2E2E2E2E2E2E2E2E2E2E2E2E2E2E03030010 (This is an example, enter your own dataset.)
 
-# ESPHome API encryption key
+```yaml
+# Your Thread network dataset (from OTBR) — a hex-encoded operational dataset TLV.
+# It must be a single unbroken hex string with an EVEN number of characters.
+# ESPHome rejects it otherwise with: "TLV must have an even number of hex characters."
+# The value below is an ILLUSTRATIVE placeholder — replace it with your own dataset.
+my_thread_dataset: "0002000B0102123402080011223344556677031000112233445566778899AABBCCDDEEFF040F4F70656E5468726561642D44656D6F050800112233445566770710FD000DB80000000000000000000000010800090200000A0200000B0200000C080011223344556677350400040000"
+
+# ESPHome API encryption key — 32-byte base64 value.
+# Generate one with:  python3 -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())"
 hag_ups_monitor__encryption_key: "your_encryption_key_here"
 ```
+
+> ⚠️ **Do not paste prose into the dataset.** Inline comments, "(This is an example…)" notes or line-wrapped
+> blocks are all rejected by the hex validator. Keep it as one quoted line of pure hex.
 
 ### Thread Device Role
 The ESP32-H2 is configured as an **MTD (Minimal Thread Device)**:
@@ -1272,8 +1355,9 @@ Contributions are welcome! Please submit issues and pull requests through GitHub
 
 ---
 
-**Version**: 1.1a (Pre-Release Alpha) — *DD4012SA migration*
-**Last Updated**: September 2026
+**Version**: 1.2.0-alpha (Pre-Release Alpha) — *Firmware correctness & documentation release*
+**Last Updated**: October 2026
 
-> **Note**: This is an alpha release. While functional, it has not been extensively tested in all scenarios. Use in production systems at your own risk. Contributions and testing feedback are welcome.
-stems at your own risk. Contributions and testing feedback are welcome.
+> **Note**: This is a pre-release alpha. While validated, it has not been extensively tested in all scenarios. Use in production systems at your own risk. Contributions and testing feedback are welcome.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list of changes in this release.
