@@ -362,9 +362,10 @@ sensors).
 
 | Version | Type | Date | Status |
 |---------|------|------|--------|
-| 1.2.0-alpha | Pre-Release Alpha | 2026-10-10 | **Current** |
-| 1.1a | Pre-Release Alpha | 2026-09-04 | Superseded — mains triggers inverted |
-| 1.0a | Pre-Release Alpha | 2026-08-21 | Superseded |
+| 1.2.1-alpha | Pre-Release Alpha | 2026-10-10 | **Current** |
+| 1.2.0-alpha | Pre-Release Alpha | 2026-10-10 | Superseded |
+| 1.1a        | Pre-Release Alpha | 2026-09-04 | Superseded — mains triggers inverted |
+| 1.0a        | Pre-Release Alpha | 2026-08-21 | Superseded |
 
 ---
 
