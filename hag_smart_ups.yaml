@@ -1,10 +1,32 @@
+# ============================================================================
+#  HAG Smart UPS - ESPHome configuration
+#  Version:  v1.2.0-alpha  (2026-10-10)
+#  Target:   ESPHome 2026.9.1  (validated: `esphome config` -> valid)
+#  Board:    ESP32-H2 Super Mini + SLZB-MR5U OTBR
+#  License:  MIT - Copyright (c) 2026 Legolas-2025
+# ============================================================================
+#  UPGRADING FROM 1.1a?
+#  v1.1a recorded mains events against the WRONG EDGE of the detection signal.
+#  The PC817 pulls GPIO4 LOW while mains is present; with `inverted: true`,
+#  LOW maps to a logical true. So `on_press` = mains RESTORED and
+#  `on_release` = mains LOST. Both handlers were swapped in 1.1a and are
+#  now corrected below. Timestamps recorded before this release are swapped
+#  and cannot be repaired retroactively.
+# ============================================================================
 esphome:
   name: hag-ups-monitor
   friendly_name: HAG UPS Monitor
-  
+  comment: "HAG Smart UPS v1.2.0-alpha"
+  on_boot:
+    # Runs late so the template number has already restored its value from NVS.
+    priority: -100
+    then:
+      - lambda: |-
+          id(ups_fuel_gauge).set_update_interval((uint32_t)(id(update_interval_slider).state * 1000));
+
 esp32:
-  board: esp32-h2-devkitm-1
   variant: esp32h2
+  board: esp32-h2-devkitm-1
   framework:
     type: esp-idf
 
@@ -19,14 +41,31 @@ api:
 ota:
   - platform: esphome
 
+# Boot-loop guard. Addresses the known "Boot Loop on Power Restore" issue:
+# a brown-out on the 5V rail during mains restore falls back to the last
+# known-good firmware instead of bricking the node. safe_mode is a top-level
+# component (it is auto-loaded by ota:) - it is NOT an ota: platform.
+# Remove this block if you prefer default behaviour.
+safe_mode:
+  boot_is_good_after: 2min
+  num_attempts: 10
+  reboot_timeout: 5min
+
+# Thread is IPv6-only, so this is mandatory when openthread is used.
 network:
   enable_ipv6: true
 
 # Thread configuration utilizing the SLZB-MR5U
+# NOTE: `tlv` is the correct key in ESPHome 2026.9.x (esphome/components/openthread/const.py:
+# CONF_TLV = "tlv"). There is no `network_dataset` key. The value is a hex-encoded
+# operational dataset TLV, NOT a file path.
 openthread:
-  device_type: MTD 
-  tlv: !secret my_thread_dataset 
+  device_type: MTD
+  tlv: !secret my_thread_dataset
 
+# Explicit pins are mandatory on ESP32-H2: ESPHome's built-in SDA/SCL aliases
+# resolve to GPIO21/GPIO22 on every ESP32 variant, and GPIO21 is a SPI-flash pin
+# on the H2. GPIO10 (ZCD0) / GPIO11 (ZCD1) are safe general-purpose I/O here.
 i2c:
   sda: GPIO10
   scl: GPIO11
@@ -54,7 +93,7 @@ globals:
   - id: saved_reboot_time
     type: std::string
     restore_value: no
-    initial_value: "\"Starting up...\"" 
+    initial_value: "\"Starting up...\""
   - id: saved_time_sync_status
     type: std::string
     restore_value: no
@@ -65,7 +104,10 @@ globals:
     initial_value: "false"
 
 sensor:
+  # `id` on the platform component is required so the update-interval slider
+  # can retune the fuel gauge polling loop at runtime.
   - platform: max17043
+    id: ups_fuel_gauge
     address: 0x36
     battery_level:
       name: "UPS Battery Level"
@@ -91,8 +133,10 @@ sensor:
     update_interval: 30s
 
   # --- Dual 18650 Temperature Monitoring ---
-  # Note: Once you boot the device, ESPHome logs will show the unique hex address 
-  # for each sensor. You can later replace "index: 0/1" with "address: 0x..." if needed. 
+  # `index` is 0-BASED and requires ESPHome >= 2025.11.0. It is mutually
+  # exclusive with `address`. Probe order follows ROM codes, so it can change
+  # if sensors are swapped - replace with `address:` once the IDs are known
+  # (ESPHome logs print the unique hex address of each sensor on first boot).
   - platform: dallas_temp
     index: 0
     name: "UPS Battery Cell 1 Temperature"
@@ -118,6 +162,8 @@ binary_sensor:
       mode:
         input: true
         pullup: true
+      # PC817 collector pulls GPIO4 LOW while the LED conducts (mains present).
+      # inverted:true makes LOW -> state true, so ON == mains present.
       inverted: true
     name: "Mains Power Status"
     id: mains_power_status
@@ -127,7 +173,23 @@ binary_sensor:
       - delayed_on: 100ms
       - delayed_off: 100ms
     on_press:
-      # Mains lost (Power Outage)
+      # State became TRUE = mains is PRESENT = mains restored.
+      # (on_press fires on the logical state going true, NOT on a rising pin edge.)
+      then:
+        - logger.log: "Mains power restored! Saving timestamp & resetting low battery flag..."
+        - lambda: |-
+            if (id(current_time).now().is_valid()) {
+              auto time_str = id(current_time).now().strftime("%Y-%m-%d %H:%M:%S");
+              id(saved_restore_time) = time_str;
+              id(last_restore_time).publish_state(time_str);
+            } else {
+              id(saved_restore_time) = "Time Sync Pending";
+              id(last_restore_time).publish_state("Time Sync Pending");
+            }
+            // Reset so the next outage can log 3% again
+            id(low_bat_logged) = false;
+    on_release:
+      # State became FALSE = mains is LOST = power outage.
       then:
         - logger.log: "Power outage detected! Saving timestamp..."
         - lambda: |-
@@ -139,18 +201,10 @@ binary_sensor:
               id(saved_outage_time) = "Time Sync Pending";
               id(last_outage_time).publish_state("Time Sync Pending");
             }
-    on_release:
-      # Mains restored
-      then:
-        - logger.log: "Mains power restored! Saving timestamp & resetting low battery flag..."
-        - lambda: |-
-            auto time_str = id(current_time).now().strftime("%Y-%m-%d %H:%M:%S");
-            id(saved_restore_time) = time_str;
-            id(last_restore_time).publish_state(time_str);
-            id(low_bat_logged) = false; // Reset so next outage can log 3% again
 
 text_sensor:
-  # This platform requires ESPHome v2026.8.0 (if earlyer verison, comment it out):
+  # Thread diagnostics (role / IP / channel). Requires ESPHome >= 2025.6 for
+  # the openthread component; the openthread_info platforms landed after that.
   - platform: openthread_info
     role:
       name: "Thread Device Role"
@@ -161,7 +215,7 @@ text_sensor:
 
   # Time Sync Status Sensor
   - platform: template
-    name: "Time Sync"
+    name: "Time sync"
     id: time_sync_status
     icon: "mdi:clock-check-outline"
     lambda: |-
@@ -204,10 +258,18 @@ number:
     min_value: 10
     max_value: 120
     step: 5
+    mode: slider
     unit_of_measurement: "s"
     restore_value: true
     initial_value: 30
     optimistic: true
+    # set_action wires the slider to the MAX17043 polling loop, so the entity
+    # documented in the README actually does something at runtime.
+    set_action:
+      - logger.log: "Fuel gauge update interval changed"
+      - lambda: |-
+          ESP_LOGI("ups", "Fuel gauge update interval set to %.0f s", x);
+          id(ups_fuel_gauge).set_update_interval((uint32_t)(x * 1000));
 
 button:
   - platform: restart
@@ -228,17 +290,17 @@ interval:
               auto time_str = id(current_time).now().strftime("%Y-%m-%d %H:%M:%S");
               id(saved_reboot_time) = time_str;
               id(last_reboot_time).publish_state(time_str);
-              
+
               // Update status global and push state
               id(saved_time_sync_status) = "Success";
               id(time_sync_status).publish_state("Success");
-              
+
               ESP_LOGI("time_sync", "Time successfully synchronized: %s", time_str.c_str());
               time_synced = true;
             } else {
               retry_count++;
               ESP_LOGW("time_sync", "Time sync pending... attempt %d of 9", retry_count);
-              
+
               if (retry_count >= 9) {
                 id(saved_time_sync_status) = "Failed - try to restart";
                 id(time_sync_status).publish_state("Failed - try to restart");
@@ -249,5 +311,6 @@ interval:
           }
 
 time:
+  # DEPENDENCIES = ["api"] in ESPHome, so the api: block above is mandatory.
   - platform: homeassistant
     id: current_time
