@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.1-alpha] - 2026-10-10
+
+### Pre-Release Alpha — Polling and Network-Traffic Correction
+
+No change to the mains-detection logic or event semantics introduced in `1.2.0-alpha`. This release corrects
+**how often values are read and transmitted over Thread**, plus one runtime defect found by compiling.
+
+Validated against ESPHome **2026.9.1** (`esphome config` → `Configuration is valid!`) and **compiled
+successfully** against ESP-IDF 5.5.5 — flash 41.0 %, RAM 37.7 %.
+
+#### Fixed
+
+- **Malformed log format string in the critical-battery handler — found by a real compile log.**
+  - `ESP_LOGI("battery", "Critical 3% battery threshold ...")` — the bare `%` followed by a space is parsed
+    by GCC as the printf *space flag* applied to a `%b` conversion, a GNU binary format that expects an
+    `unsigned int` argument. No such argument was ever supplied.
+  - The compiler warned: `' ' flag used with '%b' gnu_printf format` and
+    `format '%b' expects a matching 'unsigned int' argument`.
+  - At runtime this is undefined behaviour. The real output was
+    `Critical 3101011001011001011100100011000attery threshold reached during outage.` — the `3` and the
+    following space were consumed, replaced by uninitialised register contents rendered in binary. It
+    corrupted the one log line that matters most during a genuine low-battery event.
+  - The percent is now escaped as `%%`. Verified against GCC: the warning is gone and the line prints
+    `Critical 3% battery threshold reached during outage.`
+  - This is exactly the class of defect that schema validation cannot catch — it only appears in a full
+    compile.
+
+- **`openthread_info` was polling far faster than documented — by a wide margin the largest source of
+  network traffic on this device.**
+  - ESPHome's defaults for this platform are aggressive: `parent_last_rssi` polls every **5 s**, and
+    `role` / `ip_address` / `channel` every **1 s**.
+  - Those four entities alone accounted for roughly **11,500 messages per hour** across the Thread link.
+  - Previous documentation stated these polled at 60 s. That was incorrect and is now corrected throughout.
+  - All four are now set to **900 s**.
+- **The timestamp and status text sensors re-sent identical values every 60 s.**
+  - `TemplateTextSensor` is a `PollingComponent` with a 60 s default, so `Time sync`, `Last Power Outage
+    Time`, `Last Mains Restore Time`, `Last Low Battery 3% Time` and `Last Reboot Time` polled
+    continuously — on top of being published explicitly by the mains-detection and time-sync handlers.
+  - They now use `update_interval: never`, with the restored NVS values published once from `on_boot` so
+    Home Assistant does not show `unknown` until the first mains event.
+
+#### Added
+
+- **`delta` filters on the battery and temperature sensors.**
+  - ESPHome publishes a sensor's state on **every** poll, even when the value is unchanged
+    (`Sensor::publish_state()` calls the frontend unconditionally). `force_update` only affects whether
+    Home Assistant *records* the value — not whether the message is transmitted.
+  - Filters now suppress unchanged readings before transmission:
+    cell temperature `delta: 0.5` °C, battery level `delta: 1` %, battery voltage `delta: 0.05` V.
+  - The sensor is still **read** every poll — a local I²C / 1-Wire transaction — so detection latency is
+    unaffected. Only the network send is suppressed.
+- **The *Sensor Update Interval* control now also governs both DS18B20 cell sensors**, and its range is
+  widened from 10–120 s to **10–300 s** (10 s steps).
+
+#### Changed
+
+- **DS18B20 cadence raised from 10 s to the slider value (30 s default).**
+  - Deliberately **not** slowed further. An 18650 has roughly 40 J/K of thermal capacity, so a developing
+    internal fault raises its temperature by about 15 °C/min at 10 W and 30 °C/min at 20 W. A 300 s
+    interval would miss most of such an event — at 10 W the cell gains ~75 °C between two samples.
+  - The delta filter is what makes the fast cadence affordable, rather than a slow read interval.
+- **The 3 % critical-battery check moved from `on_value` to `on_raw_value`.**
+  - `on_value` fires only when a value passes the filter chain, so with a `delta: 1` filter in place the
+    safety threshold would only be evaluated on transmissions.
+  - `on_raw_value` is evaluated on **every** reading regardless of whether the filter suppressed the send,
+  keeping the low-battery event detection independent of the reporting cadence.
+
+#### Projected network traffic
+
+At the 30 s default, estimated messages per hour fall from roughly **12,800** to **~40–90**, depending on how
+fast the values actually move (they move faster during an active discharge). That is a reduction of well over
+**99 %**, while worst-case detection latency for a thermal or low-battery event stays at one poll.
+
+The pre-change figure counts every publish, including unchanged readings: 120 (battery level) + 120 (voltage)
++ 360 + 360 (cell temperatures) + 720 (RSSI) + 3,600 × 3 (role, IP, channel) + 300 (five template text
+sensors).
+
+#### Upgrade notes
+
+- Existing entities keep their IDs, so Home Assistant will re-pair by name without losing history.
+- Home Assistant may briefly show the five timestamp entities as `unknown` until first boot after upgrade;
+  they are published once from `on_boot`.
+- Statistics and long-term graphs remain correct — the delta filter changes *when* a value is reported, not
+  its accuracy.
+
+---
+
 ## [1.2.0-alpha] - 2026-10-10
 
 ### Pre-Release Alpha — Firmware Correctness & Documentation
