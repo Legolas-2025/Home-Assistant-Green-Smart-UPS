@@ -1,6 +1,6 @@
 # ============================================================================
 #  HAG Smart UPS - ESPHome configuration
-#  Version:  v1.2.0-alpha  (2026-10-10)
+#  Version:  v1.2.1-alpha  (2026-10-10)
 #  Target:   ESPHome 2026.9.1  (validated: `esphome config` -> valid)
 #  Board:    ESP32-H2 Super Mini + SLZB-MR5U OTBR
 #  License:  MIT - Copyright (c) 2026 Legolas-2025
@@ -16,13 +16,27 @@
 esphome:
   name: hag-ups-monitor
   friendly_name: HAG UPS Monitor
-  comment: "HAG Smart UPS v1.2.0-alpha"
+  comment: "HAG Smart UPS v1.2.1-alpha"
   on_boot:
     # Runs late so the template number has already restored its value from NVS.
     priority: -100
     then:
+      # Apply the restored slider value to every component it governs.
       - lambda: |-
-          id(ups_fuel_gauge).set_update_interval((uint32_t)(id(update_interval_slider).state * 1000));
+          const uint32_t ms = (uint32_t)(id(update_interval_slider).state * 1000);
+          id(ups_fuel_gauge).set_update_interval(ms);
+          id(ups_temp_cell_1).set_update_interval(ms);
+          id(ups_temp_cell_2).set_update_interval(ms);
+          ESP_LOGI("ups", "Poll interval set to %.0f s (fuel gauge + both cells)", id(update_interval_slider).state);
+      # The NVS-backed text sensors run with `update_interval: never`, so they
+      # never self-publish. Emit the restored values once at boot, otherwise Home
+      # Assistant shows "unknown" until the first mains event occurs.
+      - lambda: |-
+          id(time_sync_status).publish_state(id(saved_time_sync_status));
+          id(last_outage_time).publish_state(id(saved_outage_time));
+          id(last_restore_time).publish_state(id(saved_restore_time));
+          id(last_low_bat_time).publish_state(id(saved_low_bat_time));
+          id(last_reboot_time).publish_state(id(saved_reboot_time));
 
 esp32:
   variant: esp32h2
@@ -113,7 +127,13 @@ sensor:
       name: "UPS Battery Level"
       id: ups_battery_level
       icon: "mdi:battery"
-      on_value:
+      filters:
+        # Transmit only when the reading has actually moved by >= 1 %. The sensor
+        # is still READ every poll; the filter only suppresses the network send.
+        - delta: 1
+      # on_raw_value, not on_value: this is a safety threshold, so it must be
+      # evaluated on every reading even when the delta filter drops the transmit.
+      on_raw_value:
         then:
           - lambda: |-
               // If mains power is OFF (binary sensor state is false) and battery <= 3%
@@ -122,7 +142,9 @@ sensor:
                   auto time_str = id(current_time).now().strftime("%Y-%m-%d %H:%M:%S");
                   id(saved_low_bat_time) = time_str;
                   id(last_low_bat_time).publish_state(time_str);
-                  ESP_LOGI("battery", "Critical 3% battery threshold reached during outage. Timestamp saved!");
+                  // NOTE: "3%%" - a bare "%" followed by a space is parsed by GCC as the
+                  // printf ' ' flag on a %b conversion, which reads a non-existent argument.
+                  ESP_LOGI("battery", "Critical 3%% battery threshold reached during outage. Timestamp saved!");
                   id(low_bat_logged) = true;
                 }
               }
@@ -130,6 +152,11 @@ sensor:
       name: "UPS Battery Voltage"
       id: ups_battery_voltage
       icon: "mdi:battery-high"
+      filters:
+        # Transmit only on a >= 0.05 V move.
+        - delta: 0.05
+    # Default matches the slider's initial_value; on_boot and set_action retune this
+    # together with both cell temperature sensors.
     update_interval: 30s
 
   # --- Dual 18650 Temperature Monitoring ---
@@ -142,18 +169,40 @@ sensor:
     name: "UPS Battery Cell 1 Temperature"
     id: ups_temp_cell_1
     icon: "mdi:thermometer"
-    update_interval: 10s
+    # Deliberately tied to the fuel-gauge interval by on_boot + set_action. A
+    # developing internal fault lifts an 18650 by roughly 15 C/min at 10 W, so
+    # detection latency matters far more here than the slow drift of normal
+    # operation. The delta filter below is what makes a fast cadence affordable.
+    update_interval: 30s
+    filters:
+      # Read every poll (cheap, local 1-Wire), but transmit only a real 0.5 C move.
+      # A genuine thermal event still surfaces within one poll of onset.
+      - delta: 0.5
 
   - platform: dallas_temp
     index: 1
     name: "UPS Battery Cell 2 Temperature"
     id: ups_temp_cell_2
     icon: "mdi:thermometer"
-    update_interval: 10s
+    update_interval: 30s
+    filters:
+      # As per cell 1: full read cadence, transmit on a 0.5 C move only.
+      - delta: 0.5
 
   - platform: openthread_info
+    # `update_interval` must sit INSIDE each entity key - the platform-level key
+    # is rejected: "[update_interval] is an invalid option for
+    # [sensor.openthread_info]".
+    #
+    # ESPHome's defaults here are very aggressive: parent_last_rssi polls every
+    # 5s, and role / ip_address / channel every 1s. Left at defaults those four
+    # entities alone pushed ~11,500 messages per hour over the Thread link -
+    # by far the biggest source of traffic on this device.
     parent_last_rssi:
       name: "UPS Thread Signal Strength"
+      # Diagnostics only - no fault-detection role - so deliberately slow, and
+      # NOT governed by the update-interval slider.
+      update_interval: 900s
 
 binary_sensor:
   - platform: gpio
@@ -206,18 +255,27 @@ text_sensor:
   # Thread diagnostics (role / IP / channel). Requires ESPHome >= 2025.6 for
   # the openthread component; the openthread_info platforms landed after that.
   - platform: openthread_info
+    # Defaults here are 1s EACH - see the note on the RSSI sensor above.
+    # Role / IP / channel change rarely and carry no fault-detection value.
     role:
       name: "Thread Device Role"
+      update_interval: 900s
     ip_address:
       name: "Thread IP Address"
+      update_interval: 900s
     channel:
       name: "Thread Channel"
+      update_interval: 900s
 
   # Time Sync Status Sensor
   - platform: template
     name: "Time sync"
     id: time_sync_status
     icon: "mdi:clock-check-outline"
+    # These NVS-backed entities are published explicitly by the mains-detection
+    # and time-sync handlers, so self-polling would only re-send identical
+    # strings. on_boot publishes the restored values once.
+    update_interval: never
     lambda: |-
       return id(saved_time_sync_status);
 
@@ -226,6 +284,7 @@ text_sensor:
     name: "Last Power Outage Time"
     id: last_outage_time
     icon: "mdi:clock-alert"
+    update_interval: never
     lambda: |-
       return id(saved_outage_time);
 
@@ -233,6 +292,7 @@ text_sensor:
     name: "Last Mains Restore Time"
     id: last_restore_time
     icon: "mdi:clock-check"
+    update_interval: never
     lambda: |-
       return id(saved_restore_time);
 
@@ -240,6 +300,7 @@ text_sensor:
     name: "Last Low Battery 3% Time"
     id: last_low_bat_time
     icon: "mdi:clock-remove"
+    update_interval: never
     lambda: |-
       return id(saved_low_bat_time);
 
@@ -247,6 +308,7 @@ text_sensor:
     name: "Last Reboot Time"
     id: last_reboot_time
     icon: "mdi:restart"
+    update_interval: never
     lambda: |-
       return id(saved_reboot_time);
 
@@ -256,20 +318,24 @@ number:
     id: update_interval_slider
     icon: "mdi:timer-cog"
     min_value: 10
-    max_value: 120
-    step: 5
+    max_value: 300
+    step: 10
     mode: slider
     unit_of_measurement: "s"
     restore_value: true
     initial_value: 30
     optimistic: true
-    # set_action wires the slider to the MAX17043 polling loop, so the entity
-    # documented in the README actually does something at runtime.
+    # Governs the MAX17043 fuel gauge AND both DS18B20 cell sensors - they share
+    # this cadence so a fast poll rate buys fast thermal-fault detection too.
+    # The delta filters keep the network cost near zero either way.
     set_action:
-      - logger.log: "Fuel gauge update interval changed"
+      - logger.log: "Sensor update interval changed"
       - lambda: |-
-          ESP_LOGI("ups", "Fuel gauge update interval set to %.0f s", x);
-          id(ups_fuel_gauge).set_update_interval((uint32_t)(x * 1000));
+          ESP_LOGI("ups", "Poll interval set to %.0f s (fuel gauge + both cells)", x);
+          const uint32_t ms = (uint32_t)(x * 1000);
+          id(ups_fuel_gauge).set_update_interval(ms);
+          id(ups_temp_cell_1).set_update_interval(ms);
+          id(ups_temp_cell_2).set_update_interval(ms);
 
 button:
   - platform: restart
