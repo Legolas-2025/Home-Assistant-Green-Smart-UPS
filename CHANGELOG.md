@@ -7,11 +7,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0-alpha] - 2026-10-10
+
+### Pre-Release Alpha — Firmware Correctness & Documentation
+
+> **Warning**: This is a pre-release alpha. The configuration was validated against ESPHome **2026.9.1**
+> (`esphome config` → `Configuration is valid!`), but hardware behaviour has not been exhaustively tested.
+> Use in production systems at your own risk.
+
+> ⚠️ **Upgrade notice**: v1.1a recorded mains-event timestamps against the **wrong edge** of the detection
+> signal. Historical `Last Power Outage Time` / `Last Mains Restore Time` values stored before this release
+> are swapped and cannot be corrected retroactively.
+
+### Fixed
+
+- **Mains detection triggers were inverted (`binary_sensor.on_press` / `on_release`)**
+  - The PC817 optocoupler pulls GPIO4 LOW while mains is present. With `inverted: true`, LOW maps to a
+    logical `true`, so `on_press` fires on **mains restored** and `on_release` on **mains lost**.
+  - The handlers were the other way round: the outage timestamp was written when power *arrived*, and the
+    restore timestamp when power *left*.
+  - Both handlers are now swapped. Confirmed against `esphome/core/automation.h`, where `on_press` is bound
+    to `TriggerOnTrueForwarder` and `on_release` to `TriggerOnFalseForwarder`.
+  - Side effect fixed: `low_bat_logged` is now reset when mains is restored rather than when it is lost, so
+    the 3 % critical-battery event logs correctly on each subsequent outage.
+- **Mains-restored timestamp could be recorded as `1970-01-01`**
+  - The restore handler called `strftime()` without first checking `current_time.now().is_valid()`.
+  - On an unsynced clock it stored a bogus epoch value as a real event time.
+  - It now writes `Time Sync Pending`, matching the behaviour already present in the outage handler.
+- **`sensor:` update-interval number was inert**
+  - `update_interval_slider` was declared and advertised in the README but referenced by no component.
+  - See *Added* below for the wiring.
+
+### Added
+
+- **Runtime update-interval control**
+  - Added `id: ups_fuel_gauge` to the MAX17043 platform so the polling loop can be retuned at runtime.
+  - Wired `set_action` on the *Sensor Update Interval* template number to `set_update_interval()`.
+  - Added an `on_boot` hook (priority `-100`) so the NVS-restored value is re-applied after every reboot.
+  - Previously the entity changed nothing at runtime.
+- **`safe_mode` boot-loop guard**
+  - `boot_is_good_after: 2min`, `num_attempts: 10`, `reboot_timeout: 5min`.
+  - Addresses the long-standing "Boot Loop on Power Restore" known issue by falling back to the last
+    known-good firmware after repeated failed boots.
+  - Added as a **top-level component** — `ota: - platform: safe_mode` is *not* valid; `safe_mode` is a
+    standalone component that `ota:` auto-loads.
+- **Documentation**
+  - Added a minimum-version requirement table explaining why each floor matters:
+    - ESPHome **2026.9.1** (validated against) — `openthread_info` sensor/text_sensor platforms
+    - ESPHome **2025.11.0** — `dallas_temp` regained the `index:` option (removed in 2024.6, restored 2025.11)
+    - ESPHome **2025.6.0** — the `openthread` component was introduced
+  - Documented that `on_press` / `on_release` are *logical state* triggers, not physical pin edges.
+  - Documented that ESPHome's built-in `SDA`/`SCL` aliases resolve to GPIO21/GPIO22 on every ESP32
+    variant — including the H2, where GPIO21 is a SPI-flash pin. Explicit `sda:`/`scl:` are mandatory.
+  - Added a DS18B20 addressing section noting `index:` is 0-based and order-dependent.
+  - Added a "What's New in v1.2.0-alpha" section to the README.
+
+### Changed
+
+- **Documented `openthread: tlv:` as correct, with an explicit warning.**
+  - A third-party review recommended renaming `tlv:` to `network_dataset:`. That key does not exist;
+    applying it breaks the build with
+    `[network_dataset] is an invalid option for [openthread]`.
+  - The real key is `CONF_TLV = "tlv"` (`esphome/components/openthread/const.py`). The value is a
+    hex-encoded operational dataset TLV, **not** a file path.
+  - Added inline comments in the YAML plus README warnings so this is not "corrected" again.
+- Version scheme standardised to `1.2.0-alpha` (was `1.1a` / `1.0a`) so the tag parses as valid SemVer and
+  GitHub's pre-release UI recognises it.
+
+### Documentation Fixes
+
+- **Thread dataset example in `secrets.yaml` was invalid.** The sample had an odd number of hex characters
+  and embedded prose, so copying it verbatim failed validation with
+  `TLV must have an even number of hex characters`. Replaced with a single quoted line of valid hex plus
+  an explicit warning and a key-generation command.
+- **Runtime claim corrected.** The title said "Up To 6 Hours Runtime" while the calculation and changelog
+  both conclude 5–5.5 hours. Title now reads **5.5 Hours**.
+- **Power-pin locations corrected.** The README stated 5V/GND were on the top *left* and 3V3 on the top
+  *right*. Board photo inspection confirms **5V, GND and 3V3 are all on the top right**, contiguous as one
+  3-pin header, with no power pin on the left column. Corrected in the pin tables, wiring steps 4.4 / 8.2
+  and the ASCII pinout diagram; added a note about the unused `BAT` pad.
+- **Broken filename reference.** `hag_smart_ups_for_esphome.yaml` → `hag_smart_ups.yaml`.
+- **Non-existent protection removed.** The features table advertised OVP for the DD4012SA; its actual
+  protections are OTP, OCP, SCP, UVLO and BS-voltage. Corrected to UVLO/OCP/SCP/OTP.
+- **False persistence claim removed.** The *Time Sync* text sensor was documented as "Survives reboot",
+  but `saved_time_sync_status` has `restore_value: no`. Now reads "Resets on reboot".
+- **Dead entity documented honestly.** The *Sensor Update Interval* control is no longer listed as
+  "Fixed"-interval elsewhere in the doc.
+- **Garbled trailing text removed** — a stray `stems at your own risk. Contributions and testing feedback
+  are welcome.` line at the end of the README.
+- **Copyright attribution unified.** The changelog footer said "HAG Smart UPS Contributors" while `LICENSE`
+  said "Legolas-2025". The changelog now matches the LICENSE.
+- Softened the "100% interchangeable" claim for PC817/EL817 to a drop-in replacement with a CTR caveat.
+- Replaced the non-portable CHANGELOG anchor links with plain-text version names.
+
+### Known Issues
+
+- DS18B20 sensors are addressed by `index:` (probe order), which can change if sensors are swapped.
+  **Workaround**: record the hex addresses ESPHome prints on first boot and switch both entries to `address:`.
+- Boot loop may still occur when mains power restores after battery cutoff.
+  **Workaround**: fit a 100 µF – 220 µF electrolytic across the DD4012SA 5V output (pin 3) and GND (pin 2).
+  The new `safe_mode` block limits the damage but does not prevent the underlying brown-out.
+
+### Security Considerations
+
+- API encryption key must be generated per device and stored in `secrets.yaml`; do not commit it.
+- Thread network datasets contain the network key and must be kept out of public repositories.
+- The README ships an **illustrative placeholder** dataset and key — generate your own before deploying.
+
+---
+
 ## [1.1a] - 2026-09-04
 
 ### Pre-Release Alpha — DD4012SA Migration
 
 > **Warning**: This is an alpha release. The software is functional but has not been extensively tested in all scenarios. Use in production systems at your own risk.
+
+> ⚠️ **Superseded**: see [1.2.0-alpha](#120-alpha---2026-10-10) — the mains-detection triggers in this
+> release are inverted.
 
 ### Changed
 
@@ -123,7 +235,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known Issues
 
-- Boot loop may occur when mains power restores after battery cutoff
+- Boot loop may still occur when mains power restores after battery cutoff
   - **Workaround**: Add 100µF - 220µF electrolytic capacitor across Mini360 5V and GND terminals
 - DS18B20 sensor addressing requires manual configuration after initial boot
   - **Workaround**: Use index-based addressing initially, then replace with address-based configuration after identifying sensor IDs
@@ -147,6 +259,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [ ] MQTT support for non-Thread deployments
 - [ ] Over-the-air (OTA) firmware update improvements
 - [ ] Web UI for configuration without Home Assistant
+- [ ] Persist `low_bat_logged` across reboots so a mid-outage reboot cannot re-fire the 3 % event
 
 ### Potential Enhancements
 
@@ -162,8 +275,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Type | Date | Status |
 |---------|------|------|--------|
-| [1.1a](#11a---2026-09-04) | Pre-Release Alpha | 2026-09-04 | **Current** |
-| [1.0a](#10a---2026-08-21) | Pre-Release Alpha | 2026-08-21 | Superseded |
+| 1.2.0-alpha | Pre-Release Alpha | 2026-10-10 | **Current** |
+| 1.1a | Pre-Release Alpha | 2026-09-04 | Superseded — mains triggers inverted |
+| 1.0a | Pre-Release Alpha | 2026-08-21 | Superseded |
 
 ---
 
@@ -183,4 +297,4 @@ For major changes, please open an issue first to discuss the proposed modificati
 
 This project is released under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-Copyright (c) 2026 HAG Smart UPS Contributors
+Copyright (c) 2026 Legolas-2025
