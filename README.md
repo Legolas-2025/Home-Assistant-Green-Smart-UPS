@@ -4,6 +4,54 @@
 
 > A DIY Uninterruptible Power Supply with smart monitoring capabilities for the Home Assistant Green hub, featuring ESP32-H2 microcontroller and Thread wireless protocol.
 
+## What's New in v1.3.0-alpha
+
+**Added — Recorder Protection Paradigm**
+- **New binary sensor: `UPS Critical Battery Alert`.** Arms at **≤ 10 %** SoC during an outage
+  (releases at ≥ 11 %, or immediately when mains returns). Home Assistant automations watch it and
+  call `recorder.disable` — cleanly detaching `home-assistant_v2.db` *before* the battery can die —
+  then `recorder.enable` on recovery. See the automations below; the ESPHome side cannot call
+  `recorder.*` itself.
+- **Sliding-window smoothing on SoC and voltage** (`sliding_window_moving_average` 10/5 + `delta`)
+  rejects false SoC dips caused by HAG eMMC I/O bursts. Safety thresholds run on the **raw** value
+  (`on_raw_value`), so smoothing never delays a critical event.
+- **Adaptive telemetry:** during an outage the fuel gauge *and* both cell sensors poll every
+  **15 s**; on mains the fuel gauge relaxes to the slider value (default 300 s) while the cells
+  stay fixed at **60 s** so the thermal interlock remains responsive during charging.
+- **Local thermal interlock `UPS Battery Thermal Fault`:** either cell ≥ **48 °C** raises it
+  on-device (released when both cells ≤ 45 °C). Works with Thread down and HA unreachable.
+- **MAX17043 hardware alert set to 10 % at boot** via CONFIG (0x0C) bits 4:0 (`32 − percent`;
+  there is no separate ALET register on this chip — that is MAX17048/49). Optional `ALRT → GPIO12`
+  wiring exposes it as `UPS Fuel Gauge Alert (Hardware)`.
+
+**Required Home Assistant automations** (Settings → Automations → Edit YAML):
+
+```yaml
+- alias: "UPS recorder protection - disable at critical battery"
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.ups_critical_battery_alert
+      to: "on"
+  action:
+    - service: recorder.disable
+- alias: "UPS recorder protection - re-enable on mains restore"
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.mains_power_status
+      to: "on"
+  action:
+    - service: recorder.enable
+```
+
+> ⚠️ **Verified against ESPHome 2026.9.1 and this board — do not "re-fix" these:** there is no
+> `component.update_interval` action in ESPHome 2026.9.1 (runtime retuning uses
+> `set_update_interval()` in lambdas); mains detection is **GPIO4** and 1-Wire is **GPIO5** —
+> GPIO9 and GPIO8 are unusable on this board, because GPIO9 is the BOOT button and GPIO8 drives the
+> onboard LOG RGB LED, and ESPHome treats **GPIO8/9/25 as ESP32-H2 strapping pins**. See the
+> *Pin Safety Audit* below the pinout table.
+
+---
+
 ## What's New in v1.2.1-alpha
 
 **Changed — polling behaviour**
@@ -60,6 +108,7 @@ valid hex; OVP removed from the DD4012SA protection list; "survives reboot" clai
 ---
 
 ## Table of Contents
+- [What's New in v1.3.0-alpha](#whats-new-in-v130-alpha)
 - [What's New in v1.2.1-alpha](#whats-new-in-v121-alpha)
 - [What's New in v1.2.0-alpha](#whats-new-in-v120-alpha)
 1. [Overview](#overview)
@@ -891,6 +940,10 @@ If the ESP32-H2 experiences boot loops when power is restored from a fully drain
 | GPIO 5 | 5 | JTAG(MTDI), ADC_CH4 | DS18B20 Data | 1-Wire bus, needs 4.7kΩ pull-up (LEFT SIDE) |
 | GPIO 10 | 10 | ZCD0, SPI | MAX17043 SDA | I2C Data (RIGHT SIDE) ⚠️ |
 | GPIO 11 | 11 | ZCD1, SPI | MAX17043 SCL | I2C Clock (RIGHT SIDE) ⚠️ |
+| GPIO 12 | 12 | RTC GPIO | MAX17043 ALRT (optional) | Hardware low-battery alert input (RIGHT SIDE) |
+| GPIO 8 | 8 | Strapping | Onboard LOG RGB LED | **DO NOT USE** — strapping pin + onboard LED |
+| GPIO 9 | 9 | Strapping, BOOT | BOOT button | **DO NOT USE** — strapping pin |
+| GPIO 25 | 25 | Strapping, FSPICS3 | — | **DO NOT USE** — strapping pin |
 
 ### Visual Pinout (Your Board Layout)
 
@@ -937,7 +990,7 @@ RIGHT SIDE
 ├──────┤
 │  13  │ ◄── GPIO13 32K (NC)
 ├──────┤
-│  12  │ ◄── GPIO12 (NC)
+│  12  │ ◄── GPIO12 🔋 MAX17043 ALRT (optional)
 ├──────┤
 │  11  │ ◄── GPIO11 🔌 I2C SCL
 ├──────┤
@@ -1011,7 +1064,7 @@ Legend:
    - No external USB-UART chip (CP2102) needed
    - GPIO26 = USB_D-, GPIO27 = USB_D+
 3. **Internal RGB LED on GPIO8**
-   - GPIO8 is hard-wired to the onboard RGB LED
+   - GPIO8 is hard-wired to the onboard RGB LED (the `LOG` label on the silkscreen)
    - **DO NOT use GPIO8 for external components**
 4. **BOOT Pin on GPIO9**
    - GPIO9 is a strapping pin
@@ -1023,12 +1076,45 @@ Legend:
    - The board has a **vertical orientation**
    - A `BAT` pad is present next to the 5V pin (battery input); it is unused in this build
 
+### Pin Safety Audit
+
+> ✅ Verified against **ESPHome 2026.9.1** (`esphome/components/esp32/gpio_esp32_h2.py`) and the
+> **ESP-IDF ESP32-H2 GPIO Summary**. The ESP32-H2 exposes **GPIO0 – GPIO27** (28 physical pins), so
+> "the H2 has no GPIO8" is **not** true — GPIO8 exists, it is simply a strapping pin *and* the onboard
+> LOG RGB LED on this board.
+
+**Reserved by the chip — never wire these to external circuitry:**
+
+| Reserved set | GPIOs | Why it matters here |
+|---|---|---|
+| SPI flash (SPI0/1) | **GPIO15 – GPIO21** (+ GPIO6–7 on SiP-flash variants) | ESPHome's default `SDA` alias is GPIO21 — that would land on the SPI-flash reservation |
+| USB-Serial-JTAG | **GPIO26, GPIO27** | These are the board's `USB_D-` / `USB_D+` pads; using them breaks flashing over USB-C |
+| Strapping pins | **GPIO8, GPIO9, GPIO25** | GPIO8 = LOG RGB LED, GPIO9 = BOOT button, GPIO25 = `FSPICS3` pad. ESPHome emits a strapping-pin warning if you use them |
+
+**Pins this firmware actually uses — all outside every reserved set:**
+
+| GPIO | Function in `hag_smart_ups.yaml` | Alternate function | Verdict |
+|---|---|---|---|
+| GPIO4 | `binary_sensor` mains detection (PC817 collector) | ADC1_CH3 | ✅ Safe |
+| GPIO5 | `one_wire` DS18B20 bus | ADC1_CH4 | ✅ Safe |
+| GPIO10 | `i2c: sda` → MAX17043 | ZCD0 / ANA_CMPR ref | ✅ Safe |
+| GPIO11 | `i2c: scl` → MAX17043 | ZCD1 / ANA_CMPR input | ✅ Safe |
+| GPIO12 | `binary_sensor` MAX17043 `ALRT` (optional) | RTC GPIO | ✅ Safe |
+
+**Deliberately left unwired:** GPIO0–3 (JTAG / FSPI), GPIO6–7 and GPIO15–21 (SPI flash), GPIO8/9/25
+(strapping), GPIO13/14 (32K crystal pads), GPIO22 (spare — the only truly free pad on this board),
+GPIO23/24 (U0RXD / U0TXD), GPIO26/27 (USB D-/D+).
+
+> ⚠️ **`sda:` and `scl:` must stay explicit.** ESPHome's built-in `SDA`/`SCL` aliases resolve to
+> GPIO21/GPIO22 on *every* ESP32 variant. On the H2, GPIO21 is a SPI-flash pin, so omitting the
+> explicit pins produces a reserved-pin warning and an unreliable I2C bus.
+
 ---
 
 ## Software Configuration
 
 ### ESPHome YAML Configuration
-The complete ESPHome configuration is available in [`hag_smart_ups.yaml`](hag_smart_ups.yaml) (shipped with this release, **v1.2.1-alpha**).
+The complete ESPHome configuration is available in [`hag_smart_ups.yaml`](hag_smart_ups.yaml) (shipped with this release, **v1.3.0-alpha**).
 
 #### Requirements
 
