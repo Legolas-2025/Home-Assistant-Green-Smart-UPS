@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0-alpha] - 2026-10-11
+
+### Pre-Release Alpha — Recorder Protection Paradigm
+
+The firmware now provides the deterministic triggers that let Home Assistant protect its own
+Recorder database before the battery dies, instead of dying mid-write and corrupting
+`home-assistant_v2.db`. Validated against ESPHome **2026.9.1** (`esphome config` →
+`Configuration is valid!`).
+
+#### Added
+
+- **`UPS Critical Battery Alert` binary sensor (`ups_critical_state`).** Arms at **≤ 10 %** SoC
+  *during an outage only*, releases at **≥ 11 %** (hysteresis) or the instant mains returns. A Home
+  Assistant automation watches this entity and calls `recorder.disable` — cleanly detaching the
+  SQLite database while the HAG is still alive — and `recorder.enable` on recovery. The ESPHome
+  side cannot call `recorder.*` itself; the automations are documented in the README.
+- **Sliding-window smoothing on the MAX17043 SoC and voltage** (`sliding_window_moving_average`,
+  window 10 / send_every 5, followed by the existing `delta` filters). Rejects the transient SoC
+  dips caused by HAG eMMC I/O bursts. All safety thresholds (10 % / 11 % / 3 %) are evaluated on
+  the **raw** value via `on_raw_value`, so smoothing can never delay a critical event.
+- **Adaptive Thread cadence.** During an outage the fuel gauge *and* both cell sensors drop to
+  **15 s** for live diagnostics. On mains the fuel gauge relaxes to the slider value (default
+  300 s) while the cell sensors stay fixed at **60 s** — throttling the cells to 300 s would gut
+  the thermal interlock precisely during the charging cycles it exists to guard.
+- **Local thermal interlock (`ups_thermal_fault`).** Either cell reaching **≥ 48 °C** raises a
+  `heat`-class binary sensor plus an `ESP_LOGE` line entirely on-device; released only when both
+  cells return to **≤ 45 °C**. Works with the Thread link down and Home Assistant unreachable.
+- **MAX17043 hardware alert cross-check.** At boot the chip's own low-battery comparator is
+  programmed to **10 %** via a read-modify-write of CONFIG (0x0C). Note: the MAX17043 has **no
+  separate ALET register** — that is the MAX17048/49 `VALERT` (0x14). On the MAX17043 the threshold
+  lives in CONFIG bits 4:0 encoded as `32 − percent` (POR default `0x971C` = 4 %). An optional
+  `ALRT → GPIO12` binary sensor exposes the hardware alert; its latch is cleared by the CONFIG read
+  performed whenever the critical alert clears.
+
+#### Design decisions and corrections
+
+- **There is no `component.update_interval` action in ESPHome 2026.9.1** — the action registry
+  (`automation.py`) only registers `component.update` / `component.suspend` / `component.resume`.
+  Runtime interval changes keep using `PollingComponent::set_update_interval()` in lambdas, the
+  mechanism proven since v1.2.0.
+- **Pin assignments fixed to this board:** mains detection is GPIO4 (PC817) and 1-Wire is GPIO5.
+  GPIO9 and GPIO8 are unusable here — GPIO9 is the BOOT button and GPIO8 drives the onboard
+  LOG RGB LED. (Earlier notes here claimed "the H2 has no GPIO8" — that was wrong: the ESP32-H2 has
+  GPIO0–GPIO27, and ESPHome lists **GPIO8, GPIO9 and GPIO25 as H2 strapping pins**, which is an even
+  stronger reason to leave GPIO8 alone.)
+- **Pin safety audit added** to the YAML header, verified against
+  `esphome/components/esp32/gpio_esp32_h2.py` and the ESP-IDF ESP32-H2 GPIO summary. Reserved on the
+  H2: GPIO15–21 SPI flash (plus GPIO6–7 on SiP variants), GPIO26/27 USB-Serial-JTAG, GPIO8/9/25
+  strapping. All five pins this config uses — GPIO4, GPIO5, GPIO10, GPIO11, GPIO12 — sit outside
+  every reserved set, and the explicit `sda: GPIO10` / `scl: GPIO11` avoid ESPHome's default
+  `SDA`/`SCL` aliases (GPIO21/GPIO22), which would hit the SPI-flash reservation.
+
+---
+
 ## [1.2.1-alpha] - 2026-10-10
 
 ### Pre-Release Alpha — Polling and Network-Traffic Correction
@@ -362,7 +416,8 @@ sensors).
 
 | Version | Type | Date | Status |
 |---------|------|------|--------|
-| 1.2.1-alpha | Pre-Release Alpha | 2026-10-10 | **Current** |
+| 1.3.0-alpha | Pre-Release Alpha | 2026-10-11 | **Current** |
+| 1.2.1-alpha | Pre-Release Alpha | 2026-10-10 | Superseded |
 | 1.2.0-alpha | Pre-Release Alpha | 2026-10-10 | Superseded |
 | 1.1a        | Pre-Release Alpha | 2026-09-04 | Superseded — mains triggers inverted |
 | 1.0a        | Pre-Release Alpha | 2026-08-21 | Superseded |
